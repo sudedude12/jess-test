@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Jess AI Test</title>
+<style>
+  :root{color-scheme:dark;--bg:#0e0d12;--panel:#1b1a22;--line:#2b2934;--ink:#f3f0f7;--mute:#9a95a6;--me:#3d7bff;--her:#26252e;--pink:#ff5c93;--good:#3ddc84;--bad:#ff453a}
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{background:var(--bg);color:var(--ink);font:15px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;display:flex;flex-direction:column;max-width:520px;margin:0 auto;
+    padding:max(12px,env(safe-area-inset-top)) max(14px,env(safe-area-inset-right)) max(12px,env(safe-area-inset-bottom)) max(14px,env(safe-area-inset-left))}
+  h1{font-size:20px;margin:0 0 2px}
+  .sub{color:var(--mute);font-size:13px;margin-bottom:10px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:12px;display:grid;gap:9px;margin-bottom:10px}
+  label{font-size:12px;color:var(--mute);font-weight:700;text-transform:uppercase;letter-spacing:.06em}
+  select,input,button{font:inherit;color:inherit}
+  select,input{width:100%;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:10px}
+  button{border:0;border-radius:10px;padding:10px 14px;font-weight:700;background:var(--me);cursor:pointer}
+  button:disabled{opacity:.45}
+  button.ghost{background:transparent;border:1px solid var(--line)}
+  .row{display:flex;gap:8px;align-items:center}
+  .row > *{flex:1}
+  .bar{height:8px;background:var(--bg);border-radius:4px;overflow:hidden}
+  .bar b{display:block;height:100%;width:0;background:var(--pink);transition:width .2s}
+  .status{font-size:13px;color:var(--mute);min-height:18px;word-break:break-word}
+  .ok{color:var(--good)} .err{color:var(--bad)}
+  .chat{flex:1;min-height:180px;overflow-y:auto;display:flex;flex-direction:column;gap:5px;padding:4px 0}
+  .b{max-width:78%;padding:8px 12px;border-radius:18px;white-space:pre-wrap;word-break:break-word}
+  .them{background:var(--her);align-self:flex-start;border-bottom-left-radius:6px}
+  .me{background:var(--me);align-self:flex-end;border-bottom-right-radius:6px}
+  .stat{align-self:flex-start;font-size:11px;color:var(--mute);margin:0 0 6px 6px}
+  .moods{display:flex;gap:6px}
+  .moods button{flex:1;background:var(--bg);border:1px solid var(--line);font-size:13px;padding:8px}
+  .moods button.on{background:var(--pink);border-color:var(--pink)}
+  .send{display:flex;gap:8px;padding-top:8px}
+  .send input{flex:1}
+</style>
+</head>
+<body>
+  <h1>Jess AI Test</h1>
+  <div class="sub">Runs an AI model fully on this phone. Nothing is sent to a server after the download.</div>
+
+  <div class="card" id="setup">
+    <label for="model">Model</label>
+    <select id="model">
+      <option value="Llama-3.2-3B-Instruct">Llama 3.2 3B · ~1.8 GB · best quality</option>
+      <option value="Qwen2.5-3B-Instruct">Qwen 2.5 3B · ~2 GB · alternative</option>
+      <option value="Llama-3.2-1B-Instruct">Llama 3.2 1B · ~0.7 GB · fastest</option>
+    </select>
+    <div class="row">
+      <button id="load">Download &amp; load</button>
+      <button id="del" class="ghost">Delete download</button>
+    </div>
+    <div class="bar"><b id="prog"></b></div>
+    <div class="status" id="status">Checking your browser…</div>
+  </div>
+
+  <div class="card">
+    <label>Jess's mood (normally hidden in the game)</label>
+    <div class="moods" id="moods">
+      <button data-m="happy" class="on">Happy</button>
+      <button data-m="annoyed">Annoyed</button>
+      <button data-m="furious">Furious</button>
+    </div>
+  </div>
+
+  <div class="chat" id="chat"></div>
+  <form class="send" id="form">
+    <input id="msg" placeholder="Load a model first" autocomplete="off" disabled>
+    <button id="sendBtn" disabled>Send</button>
+  </form>
+
+<script type="module">
+import * as webllm from "https://esm.run/@mlc-ai/web-llm@0.2.87";
+
+const $ = s => document.querySelector(s);
+const status = (t, cls="") => { const el=$("#status"); el.textContent=t; el.className="status "+cls; };
+let engine = null, busy = false, mood = "happy", f16 = false;
+const history = [];
+
+const MOODS = {
+  happy:   "You're in a great mood and very affectionate. Use cute emojis (🥰😭💕) and lowercase.",
+  annoyed: "You're annoyed with him. Short, dry replies. Periods at the end. Almost no emojis.",
+  furious: "You're furious and close to breaking up with him. Passive-aggressive or ALL CAPS. No cute emojis.",
+};
+function systemPrompt(){
+  return `You are Jess, texting your boyfriend at night. Tomorrow is your 1-year anniversary.
+Facts: first date was at Lucia's (Italian). You hate sushi. Favorite flowers are tulips, not roses. Your coworker Kayla stole your slides. His ex is Brittany.
+${MOODS[mood]}
+Reply like a real text message: 1-2 short lines, under 25 words. Never mention being an AI. Only write Jess's message.`;
+}
+
+function modelId(base){ return `${base}-${f16 ? "q4f16_1" : "q4f32_1"}-MLC`; }
+
+async function checkSupport(){
+  if(!navigator.gpu){ status("This browser has no WebGPU. Use Chrome on Android or desktop.", "err"); $("#load").disabled = true; return; }
+  try{
+    const adapter = await navigator.gpu.requestAdapter();
+    if(!adapter){ status("WebGPU is turned off or blocked on this device.", "err"); $("#load").disabled = true; return; }
+    f16 = adapter.features.has("shader-f16");
+    await refreshCached();
+  }catch(e){ status("WebGPU check failed: " + e.message, "err"); }
+}
+async function refreshCached(){
+  const id = modelId($("#model").value);
+  const cached = await webllm.hasModelInCache(id).catch(()=>false);
+  status(cached ? `Already downloaded (${id}). Loading takes a few seconds.` : `Not downloaded yet. Use Wi-Fi for the first download.`, cached ? "ok" : "");
+}
+
+$("#model").addEventListener("change", refreshCached);
+
+$("#load").addEventListener("click", async () => {
+  const id = modelId($("#model").value);
+  $("#load").disabled = true; $("#model").disabled = true;
+  const t0 = performance.now();
+  try{
+    if(engine){ await engine.unload(); engine = null; }
+    engine = await webllm.CreateMLCEngine(id, {
+      initProgressCallback: r => { $("#prog").style.width = Math.round((r.progress||0)*100) + "%"; status(r.text); }
+    });
+    $("#prog").style.width = "100%";
+    status(`Ready: ${id} (loaded in ${((performance.now()-t0)/1000).toFixed(1)}s). Say something to Jess.`, "ok");
+    $("#msg").disabled = false; $("#sendBtn").disabled = false; $("#msg").placeholder = "Text Jess…"; $("#msg").focus();
+  }catch(e){
+    status("Couldn't load the model: " + (e.message || e) + ". Try the 1B model, or close other tabs and retry.", "err");
+  }finally{ $("#load").disabled = false; $("#model").disabled = false; }
+});
+
+$("#del").addEventListener("click", async () => {
+  const id = modelId($("#model").value);
+  try{ if(engine){ await engine.unload(); engine = null; } await webllm.deleteModelAllInfoInCache(id); status("Deleted " + id + " from this phone."); $("#prog").style.width = "0"; }
+  catch(e){ status("Delete failed: " + e.message, "err"); }
+  $("#msg").disabled = true; $("#sendBtn").disabled = true;
+});
+
+$("#moods").addEventListener("click", e => {
+  const b = e.target.closest("button"); if(!b) return;
+  mood = b.dataset.m;
+  document.querySelectorAll("#moods button").forEach(x => x.classList.toggle("on", x===b));
+});
+
+function bubble(cls, text){ const d=document.createElement("div"); d.className="b "+cls; d.textContent=text; $("#chat").appendChild(d); $("#chat").scrollTop=1e9; return d; }
+
+$("#form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const text = $("#msg").value.trim();
+  if(!text || !engine || busy) return;
+  busy = true; $("#sendBtn").disabled = true; $("#msg").value = "";
+  bubble("me", text);
+  history.push({role:"user", content:text});
+  const out = bubble("them", "…");
+  const t0 = performance.now(); let tFirst = null, reply = "", usage = null;
+  try{
+    const stream = await engine.chat.completions.create({
+      messages: [{role:"system", content: systemPrompt()}, ...history.slice(-8)],
+      stream: true, stream_options: {include_usage: true},
+      max_tokens: 60, temperature: 0.9,
+    });
+    for await (const chunk of stream){
+      const d = chunk.choices?.[0]?.delta?.content || "";
+      if(d){ if(tFirst===null) tFirst = performance.now(); reply += d; out.textContent = reply; $("#chat").scrollTop=1e9; }
+      if(chunk.usage) usage = chunk.usage;
+    }
+    history.push({role:"assistant", content:reply});
+    const s = document.createElement("div"); s.className="stat";
+    const total = ((performance.now()-t0)/1000).toFixed(1), first = tFirst ? ((tFirst-t0)/1000).toFixed(1) : "–";
+    const tps = usage?.extra?.decode_tokens_per_s ? usage.extra.decode_tokens_per_s.toFixed(1) : "?";
+    s.textContent = `first word ${first}s · total ${total}s · ${tps} tokens/s`;
+    $("#chat").appendChild(s); $("#chat").scrollTop=1e9;
+  }catch(err){
+    out.textContent = "(error: " + (err.message || err) + ")"; history.pop();
+  }finally{ busy = false; $("#sendBtn").disabled = false; $("#msg").focus(); }
+});
+
+checkSupport();
+</script>
+</body>
+</html>
